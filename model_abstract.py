@@ -7,11 +7,13 @@ import fipy
 from fipy.terms import (TransientTerm, DiffusionTerm, ImplicitSourceTerm,
                         ConvectionTerm)
 from fipy.meshes.periodicGrid1D import PeriodicGrid1D
+from fipy.meshes.periodicGrid2D import PeriodicGrid2D
 
 
-class ModelAbstract1D(object):
-    def __init__(self, dt, dx, L,
+class ModelAbstract(object):
+    def __init__(self, dim, dt, dx, L,
                  D_rho, mu):
+        self.dim = dim
         self.dt = dt
         self.dx = dx
         self.L = L
@@ -23,13 +25,21 @@ class ModelAbstract1D(object):
 
         nx = int(round((self.L / self.dx)))
         self.dx = L / nx
-        self.mesh = PeriodicGrid1D(dx=np.array([self.dx]), nx=nx)
+        if self.dim == 1:
+            self.mesh = PeriodicGrid1D(dx=np.array([self.dx]), nx=nx)
+        elif self.dim == 2:
+            self.mesh = PeriodicGrid2D(dx=np.array([self.dx]),
+                                       dy=np.array([self.dx]), nx=nx, ny=nx)
 
         self.L_perturb = self.L
         eps = 0.001
-        perturb = eps * np.sin(2.0 * np.pi * self.get_x() / self.L_perturb)
-        rho_init = 1.0 + perturb
-        c_init = 1.0 + perturb
+        x = self.get_x()
+        X, Y = np.meshgrid(x, x)
+        perturb = eps * np.sin(2.0 * np.pi * X * Y / self.L_perturb ** 2)
+        print(x.shape)
+        raw_input()
+        rho_init = 1.0 + perturb.ravel()
+        c_init = 1.0 + perturb.ravel()
         self.rho = fipy.CellVariable(mesh=self.mesh, value=rho_init)
         self.c = fipy.CellVariable(mesh=self.mesh, value=c_init)
 
@@ -51,26 +61,26 @@ class ModelAbstract1D(object):
         self.i += 1
 
     def get_x(self):
-        return self.mesh.cellCenters.value[0] - self.L / 2.0
+        return np.unique(self.mesh.cellCenters.value[0, :]) - self.L / 2.0
 
     def get_rho(self):
-        return self.rho.value
+        return self.rho.value.reshape(self.rho.mesh.shape)
 
     def get_c(self):
-        return self.c.value
+        return self.c.value.reshape(self.c.mesh.shape)
 
-dt = 0.5
+dt = 0.01
 dx = 0.005
 L = 25.0
 
-D_rho = 0.9
-mu = 1.0
+D_rho = 0.1
+mu = 10.9
 
 t_max = 100.0
 
 
 def main():
-    m = ModelAbstract1D(dt, dx, L, D_rho, mu)
+    m = ModelAbstract(1, dt, dx, L, D_rho, mu)
 
     fig = plt.figure()
     ax_rho = fig.add_subplot(2, 1, 1)
@@ -100,11 +110,43 @@ def main():
         m.iterate()
 
 
+def main_2d():
+    dx = 0.05
+    L = 1.0
+    m = ModelAbstract(2, dt, dx, L, D_rho, mu)
+
+    fig = plt.figure()
+    ax_rho = fig.add_subplot(2, 1, 1)
+    ax_c = fig.add_subplot(2, 1, 2)
+    plot_rho = ax_rho.imshow([[0]], cmap='Reds', interpolation='nearest',
+                             origin='lower', extent=2 * [-L / 2.0, L / 2.0])
+    plot_c = ax_c.imshow([[0]], cmap='Reds', interpolation='nearest',
+                         origin='lower', extent=2 * [-L / 2.0, L / 2.0])
+
+    ax_cb = plt.axes([0.875, 0.2, 0.05, 0.7])
+    fig.colorbar(plot_rho, cax=ax_cb)
+
+    plt.ion()
+    plt.show()
+    every = 1
+
+    while m.t < t_max:
+        if not m.i % every:
+            print(m.get_rho().shape)
+            plot_rho.set_data(m.get_rho())
+            plot_c.set_data(m.get_c())
+            plot_rho.autoscale()
+            plot_c.autoscale()
+            fig.canvas.draw_idle()
+            print(m.t, np.var(m.get_rho()))
+        m.iterate()
+
+
 def param_sweep():
     D_rhos = np.logspace(-2, 2, 10)
     mus = np.logspace(-2, 2, 10)
     for D_rho, mu in product(D_rhos, mus):
-        m = ModelAbstract1D(dt, dx, L, D_rho, mu)
+        m = ModelAbstract(dt, dx, L, D_rho, mu)
         while m.t < t_max:
             m.iterate()
 
@@ -115,5 +157,6 @@ def param_sweep():
             pickle.dump(m, f)
 
 if __name__ == '__main__':
-    param_sweep()
+    # param_sweep()
     # main()
+    main_2d()
