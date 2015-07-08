@@ -36,8 +36,6 @@ class ModelAbstract(object):
         x = self.get_x()
         X, Y = np.meshgrid(x, x)
         perturb = eps * np.sin(2.0 * np.pi * X * Y / self.L_perturb ** 2)
-        print(x.shape)
-        raw_input()
         rho_init = 1.0 + perturb.ravel()
         c_init = 1.0 + perturb.ravel()
         self.rho = fipy.CellVariable(mesh=self.mesh, value=rho_init)
@@ -70,16 +68,16 @@ class ModelAbstract(object):
         return self.c.value.reshape(self.c.mesh.shape)
 
 dt = 0.01
-dx = 0.005
-L = 25.0
+t_max = 100.0
 
 D_rho = 0.1
 mu = 10.9
 
-t_max = 100.0
 
+def main_1d():
+    dx = 0.005
+    L = 25.0
 
-def main():
     m = ModelAbstract(1, dt, dx, L, D_rho, mu)
 
     fig = plt.figure()
@@ -132,7 +130,6 @@ def main_2d():
 
     while m.t < t_max:
         if not m.i % every:
-            print(m.get_rho().shape)
             plot_rho.set_data(m.get_rho())
             plot_c.set_data(m.get_c())
             plot_rho.autoscale()
@@ -142,21 +139,45 @@ def main_2d():
         m.iterate()
 
 
-def param_sweep():
+def param_sweep_1d():
+    dx = 0.005
+    L = 25.0
+    dim = 1
+
     D_rhos = np.logspace(-2, 2, 10)
     mus = np.logspace(-2, 2, 10)
     for D_rho, mu in product(D_rhos, mus):
-        m = ModelAbstract(dt, dx, L, D_rho, mu)
+        m = ModelAbstract(dim, dt, dx, L, D_rho, mu)
         while m.t < t_max:
             m.iterate()
 
         rho_final = m.get_rho()
         print(D_rho, mu, rho_final.max(), np.var(rho_final))
-        fname = 'run/abstract_D_rho={},mu={}.pkl'.format(D_rho, mu)
+        fname = 'run/abstract_dim={},D_rho={},mu={}.pkl'.format(dim, D_rho, mu)
+        with open(fname, 'wb') as f:
+            pickle.dump(m, f)
+
+
+def param_sweep_2d():
+    dx = 0.5
+    L = 25.0
+    dim = 2
+    t_max = 1.0
+
+    D_rhos = np.logspace(-2, 2, 4)
+    mus = np.logspace(-2, 2, 4)
+    for D_rho, mu in product(D_rhos, mus):
+        m = ModelAbstract(dim, dt, dx, L, D_rho, mu)
+        while m.t < t_max:
+            m.iterate()
+            # print(m.t)
+
+        rho_final = m.get_rho()
+        print(D_rho, mu, rho_final.max(), np.var(rho_final))
+        fname = 'run/abstract_dim={},D_rho={},mu={}.pkl'.format(dim, D_rho, mu)
         with open(fname, 'wb') as f:
             pickle.dump(m, f)
 
 if __name__ == '__main__':
-    # param_sweep()
-    # main()
+    # param_sweep_2d()
     main_2d()
