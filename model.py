@@ -1,36 +1,11 @@
 from __future__ import print_function, division
 import numpy as np
-import matplotlib.pyplot as plt
 import fipy
 from fipy.terms import (TransientTerm, DiffusionTerm, ImplicitSourceTerm,
                         ConvectionTerm)
 from fipy.meshes.periodicGrid1D import PeriodicGrid1D
-import bannock.utils as bu
-
-
-def find_nearest_index(v, a):
-    return np.argmin(np.abs(a - v))
-
-
-def get_rho_agent(m_agent, m_coarse):
-    ns, bins = np.histogram(m_agent.r[:, 0], bins=m_coarse.get_x().shape[0],
-                            range=[-m_agent.L / 2.0, m_agent.L / 2.0])
-    rho_agent = ns / m_coarse.dx
-    return rho_agent
-
-
-rho_D = 400.0
-mu = 100.0
-L = 5000.0
-c_D = 1000.0
-c_sink = 0.01
-c_source = 1.0
-rho_0 = 1.0
-origin_flag = True
-dx_agent = 40.0
-dt = 1.0
-m = 500
-dx = 10.0
+from fipy.meshes.periodicGrid2D import PeriodicGrid2D
+from cannock.utils import make_mask
 
 
 class ModelCoarse1D(object):
@@ -60,10 +35,12 @@ class ModelCoarse1D(object):
         self.mesh = PeriodicGrid1D(dx=np.array([self.dx]), nx=nx)
 
         if origin_flag:
-            n = np.exp(-np.abs(self.get_x()) ** 2 / (2.0 * self.dx_agent ** 2))
-            n /= (n.sum() * self.dx)
-            n *= self.rho_0 * self.L * self.dx
-            rho_val = n / self.dx
+            # n = np.exp(-np.abs(self.get_x()) ** 2 / (2.0 * self.dx_agent ** 2))
+            # n /= (n.sum() * self.dx)
+            # n *= self.rho_0 * self.L * self.dx
+            # rho_val = n / self.dx
+            rho_val = np.zeros_like(self.get_x())
+            rho_val[len(rho_val) // 2] = 1.12 * (self.rho_0 * self.L) / self.dx
         else:
             rho_val = self.rho_0 * (np.ones_like(self.c) *
                                     np.random.uniform(0.99, 1.01,
@@ -104,101 +81,84 @@ class ModelCoarse1D(object):
         return self.c.value
 
 
-def run_model(dt,
-              rho_0, rho_D, origin_flag, dx_agent,
-              mu,
-              L, dx,
-              c_D, c_sink, c_source,
-              t_max, every):
-    m = ModelCoarse1D(dt,
-                      rho_0, rho_D, origin_flag, dx_agent,
-                      mu,
-                      L, dx,
-                      c_D, c_sink, c_source)
+class ModelAbstract(object):
+    def __init__(self, dim, dt, dx, L,
+                 D_rho, mu, walls):
+        self.dim = dim
+        self.dt = dt
+        self.dx = dx
+        self.L = L
+        self.D_rho = D_rho
+        self.mu = mu
+        self.walls = walls
 
-    fig = plt.figure()
-    ax = fig.gca()
-    ax.set_ylim(0.0, 1000.0)
-    plot_c = ax.scatter(m.get_x(), m.get_c(), c='yellow')
-    plot_rho = ax.plot(m.get_x(), m.get_rho(), c='red')[0]
-    # plot_rho = ax.scatter(m.get_x(), m.get_rho(), c='red')
-    # plot_arho = ax.scatter(x_agent, m_agent_0.get_density_field(), c='green')
-    plt.ion()
-    plt.show()
+        self.i = 0
+        self.t = 0.0
 
-    while m.t < t_max:
-        if not m.i % every:
-            # plot_rho.set_offsets(np.array([m.get_x(), m.get_rho()]).T)
-            plot_rho.set_ydata(m.get_rho())
-            # plot_c.set_offsets(np.array([m.get_x(), m.get_c()]).T)
-            plot_c.set_ydata(m.get_c())
-            fig.canvas.draw()
-            print(m.t, np.mean(m.get_rho()))
-        m.iterate()
-    return m
+        nx = int(round((self.L / self.dx)))
+        self.dx = L / nx
+        if self.dim == 1:
+            self.mesh = PeriodicGrid1D(dx=np.array([self.dx]), nx=nx)
+        elif self.dim == 2:
+            self.mesh = PeriodicGrid2D(dx=np.array([self.dx]),
+                                       dy=np.array([self.dx]), nx=nx, ny=nx)
 
+        self.L_perturb = self.L
+        eps = 1e-2
+        x = self.get_x()
+        if self.dim == 1:
+            perturb = eps * np.sin(2.0 * np.pi * x / self.L_perturb)
+        else:
+            X, Y = np.meshgrid(x, x)
+            perturb = eps * np.sin(2.0 * np.pi * X * Y / self.L_perturb ** 2)
+        rho_init = 1.0 + perturb
+        c_init = 1.0 + perturb
 
-def match_to_agent(agent_dirname, dt, dx):
-    agent_fnames = bu.get_filenames(agent_dirname)
-    m_agent_0 = bu.filename_to_model(agent_fnames[0])
-    # x_agent = np.linspace(-m_agent_0.L / 2.0, m_agent_0.L / 2.0,
-    #                       m_agent_0.c.a.shape[0])
-    ts = np.array([bu.filename_to_model(f).t for f in agent_fnames])
+        if self.walls is not None:
+            rho_init *= np.logical_not(self.walls.a)
+            c_init *= np.logical_not(self.walls.a)
 
-    rho_0 = m_agent_0.rho_0
-    origin_flag = m_agent_0.origin_flag
-    dx_agent = m_agent_0.dx
-    mu = m_agent_0.chi * m_agent_0.v_0
-    if m_agent_0.onesided_flag:
-        mu /= 2.0
-    rho_D = m_agent_0.v_0 ** 2 / m_agent_0.p_0
-    L = m_agent_0.L
-    c_D = m_agent_0.c_D
-    c_sink = m_agent_0.c_sink
-    c_sink = m_agent_0.c_sink
-    c_source = m_agent_0.c_source
+            mask = make_mask(self.mesh, self.walls)
+            self.D_rho_var = fipy.FaceVariable(mesh=self.mesh,
+                                               value=self.D_rho)
+            self.D_rho_var.setValue(0.0, where=mask)
+            self.D_c_var = fipy.FaceVariable(mesh=self.mesh, value=1.0)
+            self.D_c_var.setValue(0.0, where=mask)
+        else:
+            self.D_rho_var = self.D_rho
+            self.D_c_var = 1.0
 
-    m = ModelCoarse1D(dt,
-                      rho_0, rho_D, origin_flag, dx_agent,
-                      mu,
-                      L, dx,
-                      c_D, c_sink, c_source)
+        self.rho = fipy.CellVariable(mesh=self.mesh, value=rho_init.T.ravel())
+        self.c = fipy.CellVariable(mesh=self.mesh, value=c_init.T.ravel())
 
-    fig = plt.figure()
-    ax = fig.gca()
-    ax.set_xlim(-500.0, 500.0)
-    ax.set_ylim(0.0, 1000.0)
-    plot_rho = ax.plot(m.get_x(), m.get_rho(), c='red')[0]
-    plot_arho = ax.plot(m.get_x(), get_rho_agent(m_agent_0, m), c='green')[0]
-    plt.ion()
-    plt.show()
+        eq_rho = (TransientTerm(var=self.rho) ==
+                  DiffusionTerm(coeff=self.D_rho_var, var=self.rho) -
+                  ConvectionTerm(coeff=mu * self.c.grad, var=self.rho))
 
-    every = 10
+        eq_c = (TransientTerm(var=self.c) ==
+                DiffusionTerm(coeff=self.D_c_var, var=self.c) +
+                self.rho -
+                ImplicitSourceTerm(coeff=1.0, var=self.c))
 
-    while m.t < 20000.0:
-        if not m.i % every:
-            rho_coarse = m.get_rho()
-            plot_rho.set_ydata(rho_coarse)
+        self.eq = eq_rho & eq_c
 
-            i_agent_fname = find_nearest_index(m.t, ts)
-            m_agent = bu.filename_to_model(agent_fnames[i_agent_fname])
-            rho_agent = get_rho_agent(m_agent, m)
-            plot_arho.set_ydata(rho_agent)
-            ax.set_ylim(0.0, 1.1 * max(rho_coarse.max(), rho_agent.max()))
-            fig.canvas.draw()
-            print(m.t, np.mean(m.get_rho()))
-        m.iterate()
-    return m
+    def iterate(self):
+        self.eq.solve(dt=self.dt)
 
-if __name__ == '__main__':
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=1,origin_flag=1,rho_0=0.1,chi=7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=10,p_0=1,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=1,origin_flag=1,rho_0=10,chi=0.7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=1,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=2,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=0.5,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=0,vicsek_R=0'
-    # agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=1,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=1,vicsek_R=0'
-    agent_dirname = '/Users/ewj/Desktop/cannock/autochemo_model_dim=1,seed=1,dt=0.1,L=5e+03,dx=40,c_D=1e+03,c_sink=0.01,c_source=1,v_0=20,p_0=0.5,origin_flag=1,rho_0=1,chi=0.7,onesided_flag=1,vicsek_R=0'
-    match_to_agent(agent_dirname, dt=10.0, dx=5.0)
-    # import cProfile
-    # cProfile.run('main()', sort='cumtime')
+        self.t += self.dt
+        self.i += 1
+
+    def get_x(self):
+        return np.unique(self.mesh.cellCenters.value[0, :]) - self.L / 2.0
+
+    def get_rho(self):
+        if self.dim == 2:
+            return self.rho.value.reshape(self.rho.mesh.shape)
+        else:
+            return self.rho.value
+
+    def get_c(self):
+        if self.dim == 2:
+            return self.c.value.reshape(self.rho.mesh.shape)
+        else:
+            return self.c.value
